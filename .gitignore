@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vercel/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+*.log
+.DS_Store
+artifacts/
+playwright-report/
+test-results/
+scratch/*.png
+shared/
+library-files/
