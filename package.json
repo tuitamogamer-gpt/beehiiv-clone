@@ -5,23 +5,43 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "dev:api": "node --env-file-if-exists=.env --import tsx server/dev.ts",
+    "typecheck:server": "tsc -p tsconfig.server.json",
+    "test:backend": "tsx --test server/tests/*.test.ts",
+    "db:migrate": "node --env-file-if-exists=.env --import tsx server/cli.ts migrate",
+    "db:bootstrap": "node --env-file-if-exists=.env --import tsx server/cli.ts bootstrap",
+    "worker": "node --env-file-if-exists=.env --import tsx server/cli.ts worker"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@vercel/blob": "^2.8.2",
     "@vitejs/plugin-react": "6.1.2",
-    "vite": "8.3.4",
-    "typescript": "~5.8.3",
+    "dompurify": "^3.2.4",
+    "hono": "^4.13.13",
+    "ipaddr.js": "^2.5.0",
+    "lucide-react": "^0.468.0",
+    "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "lucide-react": "^0.468.0",
     "recharts": "^2.15.0",
-    "dompurify": "^3.2.4"
+    "sanitize-html": "^2.18.1",
+    "sharp": "^0.35.5",
+    "stripe": "^23.0.0",
+    "svix": "^2.8.0",
+    "typescript": "~5.8.3",
+    "vite": "8.3.4",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.0",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@playwright/test": "^1.51.0"
+    "@types/sanitize-html": "^2.16.2",
+    "tsx": "^4.23.15"
   },
   "engines": {
     "node": "24.x"

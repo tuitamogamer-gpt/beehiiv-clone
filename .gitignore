@@ -13,3 +13,6 @@ test-results/
 scratch/*.png
 shared/
 library-files/
+
+.data/
+coverage/
