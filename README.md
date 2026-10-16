@@ -1,4 +1,4 @@
-# Newsletter workspace
+# beehiiv-clone
 
 A responsive, interactive beehiiv-inspired publishing dashboard built with React, TypeScript, and Vite.
 
