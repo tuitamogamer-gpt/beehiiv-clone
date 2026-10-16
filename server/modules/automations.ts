@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../generated/sanitizer.cjs';
 import type { Api, Ctx, EmailMessage, RecordData, Services, Store, Stored } from '../contracts.js';
 import { ApiError, audit, hash, id, jsonBody, now, principal, requireRole, requireScope } from '../core/http.js';
 import { safeFetch } from '../core/network.js';

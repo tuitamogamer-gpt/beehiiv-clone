@@ -1,4 +1,4 @@
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../generated/sanitizer.cjs';
 
 export type RenderChannel = 'email' | 'web';
 export type RenderTier = 'Free' | 'Premium';

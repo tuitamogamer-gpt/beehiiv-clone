@@ -5,14 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
+    "build": "node scripts/build-sanitizer.mjs && tsc -b && tsc -p tsconfig.server.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "dev:api": "node --env-file-if-exists=.env --import tsx server/dev.ts",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "test:backend": "tsx --test server/tests/*.test.ts",
     "db:migrate": "node --env-file-if-exists=.env --import tsx server/cli.ts migrate",
     "db:bootstrap": "node --env-file-if-exists=.env --import tsx server/cli.ts bootstrap",
-    "worker": "node --env-file-if-exists=.env --import tsx server/cli.ts worker"
+    "worker": "node --env-file-if-exists=.env --import tsx server/cli.ts worker",
+    "postinstall": "node scripts/build-sanitizer.mjs",
+    "pretest:backend": "node scripts/build-sanitizer.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.5",
@@ -26,7 +28,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^2.15.0",
-    "sanitize-html": "^2.18.1",
+    "sanitize-html": "2.18.1",
     "sharp": "^0.35.5",
     "stripe": "^23.0.0",
     "svix": "^2.8.0",
@@ -41,6 +43,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/sanitize-html": "^2.16.2",
+    "esbuild": "0.28.2",
     "tsx": "^4.23.15"
   },
   "engines": {
