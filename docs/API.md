@@ -177,7 +177,7 @@ Errors use `{error:{code,message,details?,requestId?}}`; successful responses in
 | 429 | Rate limit; retry later with exponential backoff and jitter |
 | 502 / 503 | Provider unavailable or required service not configured |
 
-Authenticated API traffic has a shared limit of 600 requests per credential per minute. Additional limits apply: login 30/client and 10/email per 15 minutes; media upload 30/publication/minute; API-key creation 30/publication/hour; MCP 120/user/publication/minute; AI text 30/publication/hour; AI images 10/hour; audio and transcription 20/hour each. Public signup and reader login have stricter IP/email limits. These are current application limits, not contractual capacity guarantees. Errors do not currently guarantee a `Retry-After` header. Media uploads are limited to 4 MB; the server's request-body limit also applies to JSON and multipart overhead.
+Authenticated API traffic has a shared limit of 600 requests per credential per minute. Additional limits apply: login 30/client and 10/email per 15 minutes; media upload 30/publication/minute; API-key creation 30/publication/hour; MCP 120/user/publication/minute; AI text 30/publication/hour; AI images 10/hour; audio and transcription 20/hour each. Public signup and reader login have stricter IP/email limits. These are current application limits, not contractual capacity guarantees. Application rate-limit errors (`rate_limit_exceeded`) include a `Retry-After` header and `details.retryAfter`, both in seconds until the current limit window resets. Provider-originated 429 errors may not carry that hint, so keep exponential backoff with jitter. Media uploads are limited to 4 MB; the server's request-body limit also applies to JSON and multipart overhead.
 
 ## Module index
 
@@ -188,7 +188,7 @@ Authenticated API traffic has a shared limit of 600 requests per credential per 
 | Subscribers, segments, automations | `/subscribers`, `/segments`, `/automations` | [Audience and automation APIs](./audience-automations.md) |
 | Drafts, rendering, sending, suppression | `/posts`, `/domains/verify`, `/suppressions`, `/webhooks/resend` | [Delivery](./delivery.md) |
 | Payments, community, podcasts | `/products`, `/commerce/*`, `/community/*`, `/podcasts/*`, `/webhooks/stripe` | [Commerce/community/podcasts](./commerce-community-podcasts.md) |
-| Reader identity | `/public/:slug/reader/login`, `/verify`, `/me`, `/logout` | Separate `bh_reader` session; login requires an active subscriber and configured email |
+| Reader identity and public home | `/public/:slug`, `/public/:slug/reader/login`, `/verify`, `/me`, `/logout` | Separate `bh_reader` session; login requires an active subscriber and configured email. Emailed confirmation, sign-in and unsubscribe links open scanner-safe HTML pages; see [reader identity](./commerce-community-podcasts.md#reader-identity-and-access) |
 | Webhooks, analytics, AI, MCP | `/webhooks`, `/analytics/*`, `/ai/*`, `/mcp` | [Integrations](./integrations.md) |
 | Templates, website, comments, surveys | `/templates`, `/website/*`, `/posts/:id/comments`, `/surveys`, `/polls` | [Content APIs](./integrations.md) |
 | Media | `/media`, `/media/:id/content`, `/media/:id/publish`, `/media/:id/public` | [Private media and explicit publication](./integrations.md#explicitly-publishing-media) |

@@ -4,6 +4,7 @@ import type { Api, RecordData, Services, Store, Stored } from '../contracts.js';
 import { ApiError, audit, hash, jsonBody, now, randomToken, requireRole, requireScope } from '../core/http.js';
 import { config } from '../core/config.js';
 import { rateLimit, requestIp, resolvePublicTenant, verifyBotToken } from '../core/security.js';
+import { isFormPost, publicErrorPage, publicPage } from '../core/pages.js';
 import { triggerAutomations } from './automations.js';
 import { growthSignupFields, recordGrowthSignup, confirmGrowthSignup } from './growth.js';
 
@@ -55,7 +56,7 @@ const segmentSchema=z.object({name:z.string().trim().min(1).max(200),type:z.enum
 const segmentUpdateSchema=z.object({name:z.string().trim().min(1).max(200).optional(),type:z.enum(['dynamic','static']).optional(),match:z.enum(['all','any']).optional(),conditions:z.array(conditionSchema).max(50).optional(),subscriberIds:z.array(z.string().min(1).max(200)).max(10000).optional(),version:z.number().int().positive().optional()}).strict();
 export function matchesCondition(subscriber:RecordData,condition:SegmentCondition):boolean{
  const value=condition.field.startsWith('customFields.')?subscriber.customFields?.[condition.field.slice(13)]:subscriber[condition.field];
- const expected=condition.value;const isSet=value!==null&&value!==undefined&&value!=='';
+ const expected=condition.value;const isSet=Array.isArray(value)?value.length>0:value!==null&&value!==undefined&&value!=='';
  switch(condition.operator){case'is_set':return isSet;case'not_set':return !isSet;case'equals':return Array.isArray(value)?value.includes(expected):value===expected;case'not_equals':return Array.isArray(value)?!value.includes(expected):value!==expected;case'contains':return Array.isArray(value)?value.includes(expected):typeof value==='string'&&typeof expected==='string'&&value.toLowerCase().includes(expected.toLowerCase());case'not_contains':return Array.isArray(value)?!value.includes(expected):typeof value==='string'&&typeof expected==='string'&&!value.toLowerCase().includes(expected.toLowerCase());case'greater_than':return typeof value==='number'&&typeof expected==='number'&&value>expected;case'less_than':return typeof value==='number'&&typeof expected==='number'&&value<expected;}
 }
 export function matchesSegment(subscriber:Stored,segment:RecordData):boolean{
@@ -115,6 +116,20 @@ export function registerAudience(app:Api,services:Services):void{
   return c.json({message:confirmationMessage},202);
  });
  const confirm=async(tenantId:string,token:string)=>store.transaction(async tx=>{const tokenHash=hash(token);await tx.lock(`confirmation:${tenantId}:${tokenHash}`);const record=await tx.get(tenantId,'confirmation_token',tokenHash);if(!record||record.data.consumedAt||Date.parse(record.data.expiresAt)<=Date.now())throw new ApiError(400,'invalid_confirmation','This confirmation link is invalid or has expired.');const subscriber=await tx.get(tenantId,'subscriber',record.data.subscriberId);if(!subscriber||subscriber.data.status!=='Pending')throw new ApiError(400,'invalid_confirmation','This confirmation link is invalid or has expired.');await tx.update(tenantId,'confirmation_token',record.id,{...record.data,consumedAt:now()},record.version);const updated=await tx.update(tenantId,'subscriber',subscriber.id,{...subscriber.data,status:'Active',confirmedAt:now()},subscriber.version);await confirmGrowthSignup(services,tx,tenantId,updated);await services.emit(tenantId,'subscriber.confirmed',{subscriberId:subscriber.id,...updated.data},tx);await triggerAutomations(services,tenantId,'subscriber.confirmed',subscriber.id,`${subscriber.id}:confirmed`,tx);return {message:'Your subscription is confirmed.'};});
- app.get('/public/:slug/confirm',async c=>{await rateLimit(services,`confirm:${hash(requestIp(c.req.raw.headers))}`,20,60);const token=c.req.query('token');if(!token||token.length>200)throw new ApiError(400,'invalid_confirmation','This confirmation link is invalid or has expired.');const tenantId=await resolvePublicTenant(store,c.req.param('slug'));c.header('referrer-policy','no-referrer');c.header('cache-control','no-store');return c.json(await confirm(tenantId,token));});
- app.post('/public/:slug/confirm',async c=>{await rateLimit(services,`confirm:${hash(requestIp(c.req.raw.headers))}`,20,60);const input=await jsonBody(c,z.object({token:z.string().min(20).max(200)}).strict());const tenantId=await resolvePublicTenant(store,c.req.param('slug'));return c.json(await confirm(tenantId,input.token));});
+ // Opening the emailed link only shows a button. Mail security scanners prefetch links, so the reader's own click must confirm.
+ const invalidConfirmation=()=>new ApiError(400,'invalid_confirmation','This confirmation link is invalid or has expired.');
+ const confirmationUsable=async(tenantId:string,token:string)=>{const record=await store.get(tenantId,'confirmation_token',hash(token));if(!record||record.data.consumedAt||Date.parse(record.data.expiresAt)<=Date.now())return false;return (await store.get(tenantId,'subscriber',record.data.subscriberId))?.data.status==='Pending';};
+ const pageBrand=(publication?:Stored)=>({publication:typeof publication?.data.name==='string'&&publication.data.name.trim()?publication.data.name.trim():undefined,accent:publication?.data.accent});
+ app.get('/public/:slug/confirm',async c=>{let publication:Stored|undefined;try{
+  await rateLimit(services,`confirm:${hash(requestIp(c.req.raw.headers))}`,20,60);const token=c.req.query('token');if(!token||token.length<20||token.length>200)throw invalidConfirmation();
+  const tenantId=await resolvePublicTenant(store,c.req.param('slug'));publication=await getPublication(store,tenantId);if(!await confirmationUsable(tenantId,token))throw invalidConfirmation();const brand=pageBrand(publication);
+  return publicPage(c,{...brand,title:'Confirm your subscription',heading:'One last step.',message:`Confirm that you want to receive ${brand.publication||'this newsletter'} by email.`,forms:[{button:'Confirm subscription',fields:{token}}],note:'Didn’t sign up? Close this page and you won’t be subscribed.'});
+ }catch(error){return publicErrorPage(c,error,{...pageBrand(publication),note:'Signed up recently? Submit the signup form again to receive a fresh confirmation link.'});}});
+ app.post('/public/:slug/confirm',async c=>{const form=isFormPost(c.req.raw.headers);let publication:Stored|undefined;try{
+  await rateLimit(services,`confirm:${hash(requestIp(c.req.raw.headers))}`,20,60);let token:string;
+  if(form){const body=await c.req.parseBody();token=typeof body.token==='string'?body.token:'';if(token.length<20||token.length>200)throw invalidConfirmation();}else token=(await jsonBody(c,z.object({token:z.string().min(20).max(200)}).strict())).token;
+  const slug=c.req.param('slug'),tenantId=await resolvePublicTenant(store,slug);const result=await confirm(tenantId,token);if(!form)return c.json(result);
+  publication=await getPublication(store,tenantId);const brand=pageBrand(publication);
+  return publicPage(c,{...brand,tone:'success',title:'Subscription confirmed',heading:'You’re subscribed.',message:`Thanks for confirming. New issues of ${brand.publication||'this newsletter'} will arrive in your inbox.`,links:[{label:'Read recent posts →',href:`/api/public/${encodeURIComponent(slug)}`}]});
+ }catch(error){if(!form)throw error;return publicErrorPage(c,error,{...pageBrand(publication),note:'Signed up recently? Submit the signup form again to receive a fresh confirmation link.'});}});
 }

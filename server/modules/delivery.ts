@@ -6,6 +6,7 @@ import type {Api, RecordData, Services, Store, Stored} from '../contracts.js';
 import {ApiError, audit, hash, id, jsonBody, now, principal, requireRole, requireScope} from '../core/http.js';
 import {config} from '../core/config.js';
 import {resolvePublicTenant} from '../core/security.js';
+import {prefersHtml,publicErrorPage,publicPage} from '../core/pages.js';
 import {renderPost, sanitizePostHtml} from './email-renderer.js';
 import {readerIdentity} from './readers.js';
 import {hasPaidEntitlement} from './commerce.js';
@@ -240,7 +241,8 @@ export async function refreshPostMetrics(store:Store,tenantId:string,postId:stri
   const metrics={accepted:0,delivered:0,bounced:0,complained:0,uniqueOpens:0,uniqueClicks:0,botClicks:0,opens:0,clicks:0,engagementVerified:false,source:'provider_events'};
   let cursor:string|undefined;do{const page=await tx.list(tenantId,'send_recipient',{limit:500,cursor,filters:{postId}});for(const recipient of page.items){const r=recipient.data;if(r.providerId)metrics.accepted++;if(r.deliveredAt)metrics.delivered++;if(r.bouncedAt||r.deliveryStatus==='Bounced'||r.status==='Bounced')metrics.bounced++;if(r.complainedAt)metrics.complained++;if(r.opened)metrics.uniqueOpens++;if(r.clicked)metrics.uniqueClicks++;metrics.botClicks+=r.botClickCount||0;}cursor=page.nextCursor||undefined;}while(cursor);
   metrics.opens=metrics.accepted?Math.round(metrics.uniqueOpens/metrics.accepted*1000)/10:0;metrics.clicks=metrics.accepted?Math.round(metrics.uniqueClicks/metrics.accepted*1000)/10:0;
-  const post=await tx.get(tenantId,'post',postId);if(post)await tx.update(tenantId,'post',postId,{...post.data,opens:metrics.opens,clicks:metrics.clicks,metrics,metricsSource:'provider_events',metricsVerified:false},post.version);return metrics;});
+  // Reading analytics must not bump the post version (and conflict with an open editor) when nothing changed.
+  const post=await tx.get(tenantId,'post',postId);const unchanged=post&&post.data.opens===metrics.opens&&post.data.clicks===metrics.clicks&&post.data.metricsSource==='provider_events'&&(Object.keys(metrics) as (keyof typeof metrics)[]).every(key=>post.data.metrics?.[key]===metrics[key]);if(post&&!unchanged)await tx.update(tenantId,'post',postId,{...post.data,opens:metrics.opens,clicks:metrics.clicks,metrics,metricsSource:'provider_events',metricsVerified:false},post.version);return metrics;});
 }
 
 export function renderSubscribeForm(publication:RecordData,action:string):string {
@@ -266,13 +268,20 @@ export function registerDelivery(app:Api,services:Services):void {
   app.post('/suppressions',async c=>{requireRole(c,'admin');requireScope(c,'subscribers:write');const p=principal(c);const input=await jsonBody(c,z.object({email:z.email(),scope:z.enum(['publication','transactional','global']).default('publication'),reason:z.string().min(1).max(200),permanent:z.boolean().default(true),expiresAt:z.iso.datetime().optional()}).strict());if(!input.permanent&&(!input.expiresAt||Date.parse(input.expiresAt)<=Date.now()))throw new ApiError(422,'expiry_required','Temporary suppressions need a future expiry.');return c.json(result(await addSuppression(services.store,p.tenantId,input)),201);});
   app.delete('/suppressions/:id',async c=>{requireRole(c,'admin');requireScope(c,'subscribers:write');const p=principal(c);const rule=await services.store.get(p.tenantId,'suppression',c.req.param('id'));if(!rule)throw new ApiError(404,'suppression_not_found','Suppression not found.');if(rule.data.permanent)throw new ApiError(409,'suppression_permanent','Permanent suppressions cannot be removed through this API.');await services.store.remove(p.tenantId,'suppression',rule.id,rule.version);return c.json({deleted:true});});
   const unsubscribe=async (c:any)=>{
+    // People arrive here from an email. RFC 8058 one-click clients and API callers post without asking for HTML.
+    const html=c.req.method==='GET'||prefersHtml(c.req.raw.headers);let publication:Stored|null=null;
+    const brand=()=>({publication:typeof publication?.data.name==='string'&&publication.data.name.trim()?publication.data.name.trim():undefined,accent:publication?.data.accent});
+    try{
     unsubscribeSecret();
     const tenantId=c.req.param('tenantId'),subscriberId=c.req.param('subscriberId'),token=c.req.param('token');const [nonce,signature,...extra]=token.split('.');
     if(!nonce||!signature||extra.length||nonce.length>200||!secureEqual(hmac(`${tenantId}:${subscriberId}:${nonce}`),signature))throw new ApiError(400,'unsubscribe_invalid','This unsubscribe link is invalid.');
     const stored=await services.store.get(tenantId,'unsubscribe_token',subscriberId);if(!stored||!secureEqual(stored.data.nonceHash,hash(nonce)))throw new ApiError(400,'unsubscribe_invalid','This unsubscribe link is invalid.');
-    if(c.req.method==='GET')return c.html(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head><body><main><h1>Unsubscribe from this newsletter?</h1><p>You will stop receiving future newsletter emails.</p><form method="post"><button type="submit">Unsubscribe</button></form></main></body></html>`);
+    publication=(await services.store.list(tenantId,'publication',{limit:1})).items[0]||null;const name=brand().publication;
+    if(c.req.method==='GET')return publicPage(c,{...brand(),title:'Unsubscribe',heading:'Unsubscribe from this newsletter?',message:name?`You’ll stop receiving ${name} by email.`:'You’ll stop receiving future newsletter emails.',forms:[{button:'Unsubscribe'}],note:'Changed your mind? Close this page and nothing changes.'});
     const subscriber=await services.store.get(tenantId,'subscriber',subscriberId);if(subscriber){await services.store.transaction(async tx=>{await tx.lock(`subscriber:${tenantId}:${subscriberId}`);const fresh=await tx.get(tenantId,'subscriber',subscriberId);if(fresh&&fresh.data.status!=='Unsubscribed'){await tx.update(tenantId,'subscriber',subscriberId,{...fresh.data,status:'Unsubscribed',unsubscribedAt:now(),unsubscribeReason:'one_click'},fresh.version);await services.emit(tenantId,'subscriber.unsubscribed',{subscriberId},tx);}});await addSuppression(services.store,tenantId,{email:subscriber.data.email,scope:'publication',reason:'unsubscribed',permanent:true});}
+    if(html)return publicPage(c,{...brand(),tone:'success',title:'Unsubscribed',heading:'You’re unsubscribed.',message:name?`You won’t receive ${name} emails anymore.`:'You won’t receive future newsletter emails.',note:'Unsubscribed by mistake? You can sign up again from the publication’s website.'});
     c.header('Cache-Control','no-store');return c.json({unsubscribed:true});
+    }catch(error){if(!html)throw error;return publicErrorPage(c,error,{...brand(),note:'Use the unsubscribe link from your most recent email from this publication.'});}
   };
   app.get('/public/unsubscribe/:tenantId/:subscriberId/:token',unsubscribe);app.post('/public/unsubscribe/:tenantId/:subscriberId/:token',unsubscribe);
   app.post('/webhooks/resend',async c=>{const body=await c.req.text();if(body.length>1_000_000)throw new ApiError(413,'payload_too_large','Webhook payload is too large.');const svixId=c.req.header('svix-id')||'';const event=verifyResendWebhook(body,{'svix-id':svixId,'svix-timestamp':c.req.header('svix-timestamp')||'','svix-signature':c.req.header('svix-signature')||''});if(typeof event.type!=='string'||!event.data?.email_id)return c.json({received:true,ignored:true},202);const eventId=hash(svixId);await services.store.transaction(async tx=>{await tx.lock(`webhook:${eventId}`);if(await tx.get(GLOBAL,'inbound_email_event',eventId))return;await tx.insert(GLOBAL,'inbound_email_event',{svixId,event,processed:false,receivedAt:now()},eventId);await services.enqueue({type:'delivery.webhook',tenantId:GLOBAL,payload:{eventId},idempotencyKey:`resend:${eventId}`,maxAttempts:16},tx);});return c.json({received:true},202);});

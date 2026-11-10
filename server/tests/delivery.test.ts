@@ -87,6 +87,7 @@ test('verified complaint suppresses globally and bot clicks never count as reade
   const f=await setup(t);await f.subscriber();const post=await f.post();await schedulePost(f.services,'tenant-a',post.id,stamp());await f.drain();
   for(const [name,data] of [['bot',{click:{userAgent:'Proofpoint URL Scanner'}}],['human',{click:{userAgent:'Mozilla/5.0'}}],['complaint',{}]] as const){const body=JSON.stringify({type:name==='complaint'?'email.complained':'email.clicked',created_at:stamp(),data:{email_id:'provider-1',...data}});assert.equal((await f.request('/webhooks/resend',{method:'POST',body,headers:sign(body,`event-${name}`)},false)).status,202);await f.drain();}
   const metrics=await refreshPostMetrics(f.store,'tenant-a',post.id);assert.equal(metrics.uniqueClicks,1);assert.equal(metrics.botClicks,1);assert.equal(metrics.engagementVerified,false);assert.equal(metrics.complained,1);
+  const settled=(await f.store.get('tenant-a','post',post.id))!.version;assert.deepEqual(await (await f.request(`/posts/${post.id}/analytics`)).json(),metrics);assert.equal((await f.store.get('tenant-a','post',post.id))!.version,settled,'reading unchanged analytics must not bump the post version');
   assert.equal((await f.store.get('tenant-a','subscriber','subscriber-a'))?.data.status,'Unsubscribed');assert.equal((await f.store.list('__delivery__','suppression')).items[0].data.reason,'complaint');assert.equal(isKnownBotClick('Mozilla/5.0'),false);
 });
 

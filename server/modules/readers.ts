@@ -7,6 +7,7 @@ import { emailSendEligibility } from './audience.js';
 import { registerProviderMessage } from './delivery.js';
 import { config } from '../core/config.js';
 import { rateLimit, requestIp, resolvePublicTenant, verifyBotToken } from '../core/security.js';
+import { isFormPost, publicErrorPage, publicPage } from '../core/pages.js';
 
 export type ReaderIdentity = { tenantId: string; userId: string; subscriberId: string; email: string; name: string; sessionId: string };
 const COOKIE = 'bh_reader';
@@ -42,16 +43,15 @@ export function registerReaders(app: Api, services: Services): void {
   await services.store.transaction(async tx => { await tx.insert(tenantId, 'reader_magic_token', { subscriberId: subscriber?.id || null, expiresAt: new Date(Date.now() + 15 * 60000).toISOString(), usedAt: null }, tokenId); await services.enqueue({ tenantId, type: 'reader.login_email', payload: { tokenId, encryptedToken: protectToken(token), slug: c.req.param('slug')! }, idempotencyKey: tokenId, maxAttempts: 4 }, tx); });
   return c.json(confirmation, 202);
  });
- async function verify(c: Ctx) {
-  assertReaderOrigin(c);
-  const tenantId = await resolvePublicTenant(services.store, c.req.param('slug')!); await rateLimit(services, `reader-verify:${requestIp(c.req.raw.headers)}`, 30, 300);
-  const token = c.req.method === 'GET' ? c.req.query('token') : (await jsonBody(c, z.object({ token: z.string().min(40).max(100) }).strict())).token;
-  if (!token || !/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new ApiError(401, 'invalid_reader_link', 'This sign-in link is invalid or expired.');
+ const invalidLink = () => new ApiError(401, 'invalid_reader_link', 'This sign-in link is invalid or expired.');
+ const validTokenFormat = (token: unknown): token is string => typeof token === 'string' && /^[A-Za-z0-9_-]{40,100}$/.test(token);
+ const brand = (publication?: { data: Record<string, any> } | null) => ({ publication: typeof publication?.data.name === 'string' && publication.data.name.trim() ? publication.data.name.trim() : undefined, accent: publication?.data.accent });
+ async function consumeLink(c: Ctx, tenantId: string, token: string) {
   const sessionToken = randomToken(); const sessionId = hash(sessionToken);
   const identity = await services.store.transaction(async tx => {
    await tx.lock(`reader-login:${tenantId}:${hash(token)}`); const magic = await tx.get(tenantId, 'reader_magic_token', hash(token));
-   if (!magic || magic.data.usedAt || Date.parse(magic.data.expiresAt) <= Date.now() || !magic.data.subscriberId) throw new ApiError(401, 'invalid_reader_link', 'This sign-in link is invalid or expired.');
-   const subscriber = await tx.get(tenantId, 'subscriber', magic.data.subscriberId); if (!subscriber || subscriber.data.status !== 'Active') throw new ApiError(401, 'invalid_reader_link', 'This sign-in link is invalid or expired.');
+   if (!magic || magic.data.usedAt || Date.parse(magic.data.expiresAt) <= Date.now() || !magic.data.subscriberId) throw invalidLink();
+   const subscriber = await tx.get(tenantId, 'subscriber', magic.data.subscriberId); if (!subscriber || subscriber.data.status !== 'Active') throw invalidLink();
    const userId = `reader:${subscriber.id}`; await tx.update(tenantId, 'reader_magic_token', magic.id, { ...magic.data, usedAt: now() }, magic.version);
    await tx.update(tenantId, 'subscriber', subscriber.id, { ...subscriber.data, readerUserId: userId }, subscriber.version);
    await tx.insert(tenantId, 'reader_session', { userId, subscriberId: subscriber.id, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), revoked: false }, sessionId);
@@ -59,9 +59,45 @@ export function registerReaders(app: Api, services: Services): void {
   });
   setCookie(c, COOKIE, sessionToken, { httpOnly: true, secure: config.production || config.appUrl.startsWith('https:'), sameSite: 'Lax', path: '/api/public', maxAge: 30 * 86400 });
   c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer');
-  return c.req.method === 'GET' ? c.redirect(`${config.appUrl}/?reader=signed-in&publication=${encodeURIComponent(c.req.param('slug')!)}`, 303) : c.json({ reader: identity });
+  return identity;
  }
- app.get('/public/:slug/reader/verify', verify); app.post('/public/:slug/reader/verify', verify);
+ // Opening the emailed link only shows a button. Mail security scanners prefetch links and must not spend the single-use token.
+ // The page keeps a strict-origin referrer policy: with no-referrer, browsers send `Origin: null` on the form post and the origin check fails.
+ app.get('/public/:slug/reader/verify', async c => {
+  let publication: { data: Record<string, any> } | undefined;
+  try {
+   const tenantId = await resolvePublicTenant(services.store, c.req.param('slug')); await rateLimit(services, `reader-verify:${requestIp(c.req.raw.headers)}`, 30, 300);
+   publication = (await services.store.list(tenantId, 'publication', { limit: 1 })).items[0];
+   const token = c.req.query('token'); if (!validTokenFormat(token)) throw invalidLink();
+   const magic = await services.store.get(tenantId, 'reader_magic_token', hash(token));
+   const subscriber = magic?.data.subscriberId ? await services.store.get(tenantId, 'subscriber', magic.data.subscriberId) : null;
+   if (!magic || magic.data.usedAt || Date.parse(magic.data.expiresAt) <= Date.now() || subscriber?.data.status !== 'Active') throw invalidLink();
+   return publicPage(c, { ...brand(publication), title: 'Sign in', heading: 'Continue to your reader account.', message: 'This single-use link signs you in on this browser.', forms: [{ button: 'Sign in', fields: { token } }], note: 'Didn’t request this? Close this page and nothing changes.' }, 200, { 'Referrer-Policy': 'strict-origin' });
+  } catch (error) { return publicErrorPage(c, error, { ...brand(publication), note: 'Request a new sign-in link from the publication website.' }); }
+ });
+ app.post('/public/:slug/reader/verify', async c => {
+  const form = isFormPost(c.req.raw.headers); let publication: { data: Record<string, any> } | undefined;
+  try {
+   assertReaderOrigin(c);
+   const slug = c.req.param('slug'), tenantId = await resolvePublicTenant(services.store, slug); await rateLimit(services, `reader-verify:${requestIp(c.req.raw.headers)}`, 30, 300);
+   const token = form ? (await c.req.parseBody()).token : (await jsonBody(c, z.object({ token: z.string().min(40).max(100) }).strict())).token;
+   if (!validTokenFormat(token)) throw invalidLink();
+   const identity = await consumeLink(c, tenantId, token);
+   return form ? c.redirect(`${config.appUrl}/api/public/${encodeURIComponent(slug)}?reader=signed-in`, 303) : c.json({ reader: identity });
+  } catch (error) {
+   if (!form) throw error;
+   publication = await resolvePublicTenant(services.store, c.req.param('slug')).then(tenantId => services.store.list(tenantId, 'publication', { limit: 1 })).then(page => page.items[0]).catch(() => undefined);
+   return publicErrorPage(c, error, { ...brand(publication), note: 'Request a new sign-in link from the publication website.' });
+  }
+ });
  app.get('/public/:slug/reader/me', async c => { c.header('Cache-Control', 'no-store'); const reader = await publicReader(c, services); const { sessionId, ...profile } = reader; return c.json({ reader: profile }); });
- app.post('/public/:slug/reader/logout', async c => { assertReaderOrigin(c); const tenant = await resolvePublicTenant(services.store, c.req.param('slug')!); const raw = getCookie(c, COOKIE); if (raw) { const record = await services.store.get(tenant, 'reader_session', hash(raw)); if (record) await services.store.update(tenant, 'reader_session', record.id, { ...record.data, revoked: true }, record.version); } deleteCookie(c, COOKIE, { path: '/api/public', secure: config.production || config.appUrl.startsWith('https:'), sameSite: 'Lax' }); return c.json({ signedOut: true }); });
+ app.post('/public/:slug/reader/logout', async c => {
+  const form = isFormPost(c.req.raw.headers), slug = c.req.param('slug')!;
+  try {
+   assertReaderOrigin(c); const tenant = await resolvePublicTenant(services.store, slug); const raw = getCookie(c, COOKIE);
+   if (raw) { const record = await services.store.get(tenant, 'reader_session', hash(raw)); if (record) await services.store.update(tenant, 'reader_session', record.id, { ...record.data, revoked: true }, record.version); }
+   deleteCookie(c, COOKIE, { path: '/api/public', secure: config.production || config.appUrl.startsWith('https:'), sameSite: 'Lax' });
+   return form ? c.redirect(`${config.appUrl}/api/public/${encodeURIComponent(slug)}?reader=signed-out`, 303) : c.json({ signedOut: true });
+  } catch (error) { if (!form) throw error; return publicErrorPage(c, error, { title: 'Sign out', heading: 'We couldn’t sign you out.' }); }
+ });
 }

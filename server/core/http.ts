@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Ctx, Principal, Role, Services } from '../contracts.js';
 export class ApiError extends Error { constructor(public status:number, public code:string, message:string, public details?:unknown){super(message);this.name='ApiError';} }
+/** Seconds a rate-limited client should wait, when the error carries that hint. */
+export function retryAfterSeconds(error:ApiError):number|undefined{const value=(error.details as {retryAfter?:unknown}|undefined)?.retryAfter;return error.status===429&&typeof value==='number'&&Number.isFinite(value)&&value>0?Math.ceil(value):undefined;}
 export async function jsonBody<T extends z.ZodType>(c:Ctx,schema:T):Promise<z.infer<T>> {
  let body:unknown;try{body=await c.req.json();}catch{throw new ApiError(400,'invalid_json','A valid JSON request body is required.');}
  const result=schema.safeParse(body);if(!result.success)throw new ApiError(422,'validation_error','Check the request fields.',result.error.issues.map(i=>({path:i.path.join('.'),message:i.message})));return result.data;

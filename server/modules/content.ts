@@ -8,6 +8,7 @@ import { hasPaidEntitlement } from './commerce.js';
 import { readerIdentity } from './readers.js';
 import { recordWebsiteRequest } from './growth.js';
 import { sanitizePostHtml } from './email-renderer.js';
+import { escapeHtml, publicErrorPage, publicPage } from '../core/pages.js';
 
 const slugSchema = z.string().trim().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -86,6 +87,30 @@ export function registerContent(app: Api, services: Services): void {
   const safePath = z.string().regex(/^\/[a-zA-Z0-9/_-]*$/).max(500);
   app.post('/website/redirects', async c => { const p = requireRole(c, 'admin', 'member'); requireScope(c, 'content:write'); const input = await jsonBody(c, z.object({ from: safePath, to: safePath, permanent: z.boolean().default(true) }).strict().refine(value => value.from !== value.to && !value.to.startsWith('//') && !value.from.startsWith('//'), 'Use distinct internal paths.')); const redirectId = hash(input.from); const row = await store.transaction(async tx => { await tx.lock(`redirects:${p.tenantId}`); let path = input.to; const visited = new Set([input.from]); for (let i = 0; i < 10; i++) { if (visited.has(path)) throw new ApiError(422, 'redirect_loop', 'This redirect would create a loop.'); visited.add(path); const next = await tx.get(p.tenantId, 'redirect', hash(path)); if (!next) break; path = next.data.to; if (i === 9) throw new ApiError(422, 'redirect_chain', 'Redirect chains are limited to ten steps.'); } const old = await tx.get(p.tenantId, 'redirect', redirectId); return old ? tx.update(p.tenantId, 'redirect', redirectId, input, old.version) : tx.insert(p.tenantId, 'redirect', input, redirectId); }); return c.json(flatten(row), 201); });
   app.delete('/website/redirects/:id', async c => { const p = requireRole(c, 'admin', 'member'); requireScope(c, 'content:write'); if (!await store.remove(p.tenantId, 'redirect', c.req.param('id'))) throw new ApiError(404, 'not_found', 'Redirect not found.'); return c.body(null, 204); });
+  // Public publication home: newest published posts and the reader's own sign-in state.
+  app.get('/public/:slug', async c => {
+    const slug = c.req.param('slug'); let publication: Stored | undefined;
+    try {
+      const tenant = await resolvePublicTenant(store, slug);
+      await rateLimit(services, `page-visits:${tenant}:${hash(requestIp(c.req.raw.headers))}`, 120, 60);
+      publication = (await store.list(tenant, 'publication', { limit: 1 })).items[0];
+      const posts = await store.list(tenant, 'post', { limit: 20, cursor: c.req.query('cursor') || undefined, filters: { status: 'Published' }, order: 'desc' });
+      let reader: { email: string } | null = null;
+      try { reader = await readerIdentity(c, services, tenant); } catch (error) { if (!(error instanceof ApiError) || error.status !== 401) throw error; }
+      await recordWebsiteRequest(services, tenant, { path: '/', referrer: c.req.header('referer'), userAgent: c.req.header('user-agent') });
+      const name = typeof publication?.data.name === 'string' && publication.data.name.trim() ? publication.data.name.trim() : 'Newsletter';
+      const base = `/api/public/${encodeURIComponent(slug)}`;
+      const formatDate = (value: unknown) => { const time = Date.parse(String(value || '')); return Number.isFinite(time) ? new Date(time).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : ''; };
+      const notice = c.req.query('reader') === 'signed-in' && reader ? '<p role="status">You’re signed in. Premium posts you have access to now open in full.</p>' : c.req.query('reader') === 'signed-out' && !reader ? '<p role="status">You’re signed out on this browser.</p>' : '';
+      const readerBar = reader ? `<div class="reader"><span>Signed in as <strong>${escapeHtml(reader.email)}</strong></span><form method="post" action="${base}/reader/logout"><button type="submit" class="secondary">Sign out</button></form></div>` : '';
+      const list = posts.items.length ? `<ul class="posts">${posts.items.map(post => { const meta = [formatDate(post.data.date), post.data.audience === 'Premium subscribers' ? 'Premium' : ''].filter(Boolean).join(' · '); return `<li><a href="${base}/posts/${encodeURIComponent(post.id)}">${escapeHtml(post.data.title || 'Untitled post')}</a>${post.data.subtitle ? `<p>${escapeHtml(post.data.subtitle)}</p>` : ''}${meta ? `<small>${escapeHtml(meta)}</small>` : ''}</li>`; }).join('')}</ul>` : '<p class="note">No posts have been published yet. New issues will appear here.</p>';
+      return publicPage(c, {
+        title: name, heading: name, message: typeof publication?.data.description === 'string' ? publication.data.description.slice(0, 600) : undefined, accent: publication?.data.accent, hideIcon: true, wide: true, indexable: true,
+        bodyHtml: notice + readerBar + list,
+        links: posts.nextCursor ? [{ label: 'Older posts →', href: `${base}?cursor=${encodeURIComponent(posts.nextCursor)}` }] : [],
+      }, 200, { 'Cache-Control': 'private, no-store', Vary: 'Cookie', 'Referrer-Policy': 'strict-origin' });
+    } catch (error) { return publicErrorPage(c, error, { title: 'Publication unavailable', heading: 'This page isn’t available.', publication: publication?.data.name, accent: publication?.data.accent }); }
+  });
   app.get('/public/:slug/resolve', async c => { const tenant = await resolvePublicTenant(store, c.req.param('slug')), path = c.req.query('path') || '/'; const redirect = await store.get(tenant, 'redirect', hash(path)); if (!redirect) throw new ApiError(404, 'not_found', 'Redirect not found.'); return c.json({ destination: redirect.data.to, status: redirect.data.permanent ? 301 : 302 }); });
   app.get('/public/:slug/pages/:pageSlug', async c => {
     const tenant = await resolvePublicTenant(store, c.req.param('slug')); const row = (await store.list(tenant, 'website_page', { filters: { 'published.slug': c.req.param('pageSlug') }, limit: 1 })).items[0]; if (!row?.data.published) throw new ApiError(404, 'not_found', 'Page not found.'); const page = row.data.published;

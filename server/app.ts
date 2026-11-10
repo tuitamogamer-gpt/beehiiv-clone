@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Variables } from './contracts.js';
 import type { RuntimeServices } from './core/services.js';
-import { ApiError, id } from './core/http.js';
+import { ApiError, id, retryAfterSeconds } from './core/http.js';
 import { config, configurationStatus } from './core/config.js';
 import { rateLimit, secureEqual } from './core/security.js';
 import { authenticate, registerAuth } from './modules/auth.js';
@@ -42,6 +42,6 @@ export function createApp(services:RuntimeServices){
  app.get('/jobs/run',run);app.post('/jobs/run',run);
  registerAuth(app,services);registerWorkspace(app,services);registerAudience(app,services);registerAutomations(app,services);registerDelivery(app,services);registerCommerce(app,services);registerCommunity(app,services);registerPodcasts(app,services);registerReaders(app,services);registerMedia(app,services);registerIntegrations(app,services);registerContent(app,services);registerGrowth(app,services);
  app.notFound(c=>c.json({error:{code:'not_found',message:'API route not found.'}},404));
- app.onError((error,c)=>{const known=error instanceof ApiError;if(!known)console.error(JSON.stringify({requestId:c.get('requestId'),error:error.name,message:config.production?'Unhandled request failure':error.message}));return c.json({error:{code:known?error.code:'internal_error',message:known?error.message:'The request could not be completed.',...(known&&error.details?{details:error.details}:{}),requestId:c.get('requestId')}},(known?error.status:500) as any);});
+ app.onError((error,c)=>{const known=error instanceof ApiError;if(!known)console.error(JSON.stringify({requestId:c.get('requestId'),error:error.name,message:config.production?'Unhandled request failure':error.message}));const retryAfter=known?retryAfterSeconds(error):undefined;return c.json({error:{code:known?error.code:'internal_error',message:known?error.message:'The request could not be completed.',...(known&&error.details?{details:error.details}:{}),requestId:c.get('requestId')}},(known?error.status:500) as any,retryAfter?{'Retry-After':String(retryAfter)}:undefined);});
  return app;
 }
