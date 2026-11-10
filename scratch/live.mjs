@@ -2,7 +2,7 @@ import { chromium, expect } from '@playwright/test';
 import { readFileSync, mkdirSync } from 'node:fs';
 const credentials = JSON.parse(readFileSync(process.env.LIVE_TEST_CREDENTIALS || '/tmp/beehiiv-live-browser-credentials.json', 'utf8'));
 const origin = process.env.LIVE_TEST_URL || 'http://localhost:5173';
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {}) });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
@@ -83,7 +83,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator('.live-content')).toContainText('Welcome back, Local.');
   await page.screenshot({ path: 'artifacts/live-overview-mobile.png', fullPage: true });
-  for (const tab of ['Posts', 'Audience', 'Settings', 'Developers', 'Overview']) {
+  for (const tab of ['Posts', 'Audience', 'Analytics', 'Settings', 'Developers', 'Overview']) {
     await navigate(tab);
     const width = await page.evaluate(() => ({ body: document.body.scrollWidth, viewport: innerWidth }));
     expect(width.body, `${tab} should fit mobile viewport`).toBeLessThanOrEqual(width.viewport);

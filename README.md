@@ -44,10 +44,12 @@ Email, payment, bot protection and AI adapters call real providers only when the
 - Password and magic-link authentication, separate reader sessions, publication roles, invitations, scoped and revocable API keys.
 - Subscriber validation, CSV import/export, consent confirmation, custom fields, segments, suppression and attribution.
 - Sanitized email/web rendering, free/premium content, personalization, scheduled fanout, retries, provider event verification and unsubscribe handling.
+- Reader-facing HTML pages for emailed confirmation, sign-in and unsubscribe links. Opening a link only shows a button, so mail security scanners cannot confirm, sign in or unsubscribe on a reader's behalf. A public publication home at `/api/public/:slug` lists published posts.
 - Versioned automation graphs, durable journeys, conditions, waits, email and webhook steps.
 - Stripe products, checkout, verified order events, subscriptions, private digital delivery, community and podcast APIs.
 - Signed outbound webhooks, MCP tools, AI text/images/audio/transcription, private media, content templates, page revisions, polls and surveys.
-- Session-backed live controls for core publishing and audience work; additional modules are available through REST APIs. The demo's visual controls are separate simulations.
+- Session-backed live controls for publishing, post performance, audience, segments, analytics, team, API keys and webhooks; additional modules are available through REST APIs. The demo's visual controls are separate simulations.
+- Rate-limited responses include `Retry-After`.
 
 API paths and limitations are documented in [auth](docs/auth.md), [audience and automations](docs/audience-automations.md), [delivery](docs/delivery.md), [commerce/community/podcasts](docs/commerce-community-podcasts.md), [integrations/content](docs/integrations.md), and [growth](docs/growth.md).
 
@@ -60,7 +62,7 @@ npm run build
 
 The build checks both frontend and server TypeScript. Backend tests use isolated SQLite databases and injected transports; the optional PostgreSQL integration tests require `TEST_DATABASE_URL` pointing to a disposable database. They do not send real mail or charge real cards.
 
-Browser checks live in `scratch/`. Install Chromium once with `npx playwright install chromium`, then run checks against a local server or set `BASE_URL` to a deployment. Screenshots go to the ignored `artifacts/` directory. Legacy demo checks must enter demo mode; they do not validate production providers.
+Browser checks live in `scratch/`. Install Chromium once with `npx playwright install chromium`, then run checks against a local server or set `BASE_URL` to a deployment. The live checks (`scratch/live.mjs`, `scratch/live-insights.mjs`) read `LIVE_TEST_URL` and a private `LIVE_TEST_CREDENTIALS` JSON file; set `CHROMIUM_EXECUTABLE` to use an already installed Chromium. Screenshots go to the ignored `artifacts/` directory. Legacy demo checks must enter demo mode; they do not validate production providers.
 
 ## Production
 

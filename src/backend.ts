@@ -15,6 +15,22 @@ export type WorkspaceResponse = { data: AppData; capabilities: Capabilities; ver
 export type RenderedPost = { html: string; text: string; subject: string; bytes: number; clippedRisk: boolean };
 export type TeamMember = { id: string; userId: string; email: string; name: string; role: 'admin' | 'member' | 'contributor' };
 export type ApiKeyInfo = { id: string; name: string; prefix: string; scopes: string[]; expiresAt: string | null };
+export type MailboxDomainStats = { accepted: number; delivered: number; bounced: number; complained: number };
+export type AnalyticsSummary = {
+  asOf: string;
+  subscribers: { total: number; active: number; premium: number; bySource: Record<string, number> };
+  email: { accepted: number; delivered: number; bounces: number; complaints: number; uniqueOpens: number; uniqueClicks: number; botClicks: number; openRate: number; clickRate: number; deliveryRate: number | null; byMailboxDomain: Record<string, MailboxDomainStats> };
+  commerce: { revenueByCurrency: Record<string, number>; paidOrders: number };
+  website: { recordedVisits: number };
+  limitations: string[];
+};
+export type PostMetrics = { accepted: number; delivered: number; bounced: number; complained: number; uniqueOpens: number; uniqueClicks: number; botClicks: number; opens: number; clicks: number };
+export type SegmentOperator = 'equals' | 'not_equals' | 'contains' | 'not_contains' | 'greater_than' | 'less_than' | 'is_set' | 'not_set';
+export type SegmentCondition = { field: string; operator: SegmentOperator; value?: string | number | boolean | null };
+export type Segment = { id: string; name: string; type: 'dynamic' | 'static'; match: 'all' | 'any'; conditions: SegmentCondition[]; subscriberIds: string[]; count: number | null; recalculatedAt: string | null; version: number; createdAt: string };
+export type WebhookEndpoint = { id: string; name: string; url: string; events: string[]; enabled: boolean; payloadVersion: string; version: number; createdAt: string };
+export type WebhookDelivery = { id: string; endpointId: string; eventId: string; attempt: number; status: 'delivered' | 'failed'; statusCode: number | null; error: string | null; attemptedAt: string };
+export type Page<T> = { items: T[]; nextCursor: string | null };
 
 export class BackendError extends Error {
   constructor(message: string, public status: number, public code: string) { super(message); }
